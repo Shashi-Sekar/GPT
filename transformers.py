@@ -7,4 +7,4 @@ dropout = 0
 
 class Head(nn.Module):
     def __init__(self, n_embd, head_size, block_size):
-        
+        pass
