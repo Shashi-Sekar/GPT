@@ -58,8 +58,8 @@ block_size = 8
 def get_batch(split):
     data = train_data if split == 'train' else val_data
     start_idx = torch.randint(len(data) - block_size, (batch_size,))
-    x = torch.stack([data[idx:idx+block_size] for idx in start_idx])
-    y = torch.stack([data[idx+1:idx+block_size+1] for idx in start_idx])
+    x = torch.stack([data[idx:idx+block_size] for idx in start_idx]).to(device)
+    y = torch.stack([data[idx+1:idx+block_size+1] for idx in start_idx]).to(device)
     return x, y
 
 print("\n-------------------\n")
@@ -107,9 +107,24 @@ class BigramLanguageModel(nn.Module):
             idx = torch.cat([idx, idx_next], dim=1)
         return idx
 
-model = BigramLanguageModel(vocab_size)
+model = BigramLanguageModel(vocab_size).to(device)
 logits, loss = model(xb, yb)
 print(logits.shape, xb.shape, loss)
-print(decode(model.generate(idx=torch.zeros((1,1), dtype=torch.long), max_new_tokens=100)[0].tolist()))
+print(decode(model.generate(idx=torch.zeros((1,1), dtype=torch.long, device=device), max_new_tokens=100)[0].tolist()))
 
 print("\n-------------------\n")
+
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+
+bacth_size = 32
+
+for steps in range(1000):
+    xb, yb = get_batch('train')
+    logits, loss = model(xb, yb)
+    optimizer.zero_grad(set_to_none=True)
+    loss.backward()
+    optimizer.step()
+
+print('Final Loss: {:.3f}'.format(loss.item()))
+print(decode(model.generate(idx=torch.zeros((1,1), dtype=torch.long, device=device), max_new_tokens=500)[0].tolist()))
+
