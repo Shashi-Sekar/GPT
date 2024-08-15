@@ -9,16 +9,17 @@ torch.manual_seed(1337)
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 dropout = 0
 
-batch_size = 16
-block_size = 8
-n_embed = 64
-head_size = 16
-n_head = 4
-n_layer = 4
+batch_size = 64
+block_size = 256
+n_embed = 384
+n_head = 6
+n_layer = 6
+dropout = 0.2
 
-learning_rate = 1e-3
+learning_rate = 3e-4
 max_iterations = 5000
-eval_iterations = 100
+eval_iterations = 500
+eval_interval = 200
 
 #######################################################
 
@@ -58,6 +59,8 @@ class Head(nn.Module):
     def __init__(self, n_embd, head_size, block_size, encoder=False):
         super().__init__()
 
+        self.encoder = encoder
+
         #Linear layers for key, query and value. Note: Bias is set to False
         self.key = nn.Linear(n_embed, head_size, bias=False)
         self.query = nn.Linear(n_embed, head_size, bias=False)
@@ -87,6 +90,7 @@ class Head(nn.Module):
             weight = torch.masked_fill(weight, self.tril[:T, :T] == 0, float('-inf'))
         
         weight = F.softmax(weight, dim=-1)
+        weight = self.dropout(weight)
 
         #For visualization purposes
         self.attention_map = weight
@@ -121,7 +125,7 @@ class MultiHeadAttention(nn.Module):
         self.proj = nn.Linear(n_embed, n_embed)
         self.dropout = nn.Dropout(dropout)
 
-    def foward(self, x):
+    def forward(self, x):
         scores = torch.cat([h(x) for h in self.heads], dim=-1)
         scores = self.proj(scores)
         out = self.dropout(scores)
@@ -186,119 +190,6 @@ class Block(nn.Module):
         x = x + self.ff(self.ln2(x))
         return x
     
-class Encoder(nn.Module):
-    '''
-    Encoder Block
-    Contains:
-        - Multiple Blocks of Multi-Head Self-Attention
-        - Unmasked self-attention
-    Parameters:
-        vocab_size  - Size of the vocabulary
-        n_layers    - Number of Blocks in the encoder
-        n_embed     - Size of the input embedding
-        n_head      - Number of heads in each block
-        block_size  - Max sequence length - Length of the Attention Block
-    Inputs:
-        x           - Input Data, shape (Batch, Context Length, Embedding dimension)
-    Outputs:
-        out         - Context Aware Embeddings
-    '''
-    def __init__(self, vocab_size, n_layers, n_embed, n_head, block_size):
-        super().__init__()
-        
-        #Embedding layers - includes positional encoding
-        self.token_embedding = nn.Embedding(vocab_size, n_embed)
-        self.positional_embedding = nn.Embedding(block_size, n_embed)
-
-        #Blocks of Multi-Head Self-Attention
-        self.blocks = nn.Sequential(*[Block(n_head, n_embed, block_size) for _ in range(n_layers)])
-
-        #Layer Normalization
-        self.ln = nn.LayerNorm(n_embed)
-
-        #Linear Layer to transform embeddings to logits
-        self.linear = nn.Linear(n_embed, vocab_size)
-
-    def forward(self, indices):
-        B, T = indices.shape
-
-        #Embeddings
-        tok_embed = self.token_embedding(indices)
-        pos_embed = self.positional_embedding(torch.arange(T, device=device))
-
-        x = tok_embed + pos_embed
-        out = self.blocks(x)
-        out = self.ln(out)
-        logits = self.linear(out)
-
-        B, T, v_size = logits.shape
-
-        #Can take the mean of the logits to get the final output or use just the last logit in the sequence
-        logits = torch.mean(logits, dim=1)
-
-        attention_maps = []
-        for block_id, block in enumerate(self.blocks):
-            for head_id, head in enumerate(block.sa.heads):
-                attention_maps.append(head.attention_map)
-
-        return logits
-
-class ClassifierFeedForward(nn.Module):
-    '''
-    Feed Forward Layers for the purpose of classification
-    Comes after the Encoder Block
-    Adds non-linearity to the model
-    Parameters:
-        n_input     - Size of the input embedding - Matches the embedding size of the transformer
-        n_hidden    - Size of the hidden layer
-        n_output    - Size of the output layer - Number of classes
-    Inputs:
-        x           - Output from the Encoder Block, shape (Batch, Embedding dimension)
-    Outputs:
-        out         - Class predictions
-    '''
-    def __init__(self, n_input, n_hidden, n_output):
-        super().__init__()
-
-        self.fc_layer = nn.Linear(n_input, n_hidden)
-        self.output_layer = nn.Linear(n_hidden, n_output)
-        self.relu = nn.ReLU()
-
-    def forward(self, x):
-        x = self.relu(self.fc_layer(x))
-        out = self.output_layer(out)
-
-        return out
-
-class ClassifierModel(nn.Module):
-    '''
-    Classifier Model - to predict the class of the input eg: sentinment analysis
-    Contains:
-        - Encoder Block - Unmasked multi-head self-attention
-        - Classifier Feed Forward Layers
-    Parameters:
-        vocab_size  - Size of the vocabulary
-        n_embed     - Size of the input embedding
-        n_head      - Number of heads in each block
-        block_size  - Max sequence length - Length of the Attention Block
-        n_layers    - Number of Blocks in the encoder
-        n_input     - Size of the input embedding - Matches the embedding size of the transformer
-        n_hidden    - Size of the hidden layer
-        n_output    - Size of the output layer - Number of classes
-    Inputs:
-        x          - Input data
-
-    '''
-    def __init__(self, vocab_size, n_embed, n_head, block_size, n_layers, n_input, n_hidden, n_output):
-        super().__init__()
-        self.encoder = Encoder(vocab_size, n_layers, n_embed, n_head, block_size)
-        self.classifier = ClassifierFeedForward(n_embed, n_hidden, n_output)
-
-    def forward(self, x):
-        context_aware_embeddings = self.encoder(x)
-        out = self.classifier(context_aware_embeddings)
-        return out
-
 class Decoder(nn.Module):
     '''
     Decoder Block
@@ -371,7 +262,7 @@ class Decoder(nn.Module):
 
         return idx
 
-class BigramLanguageModel(nn.Module):
+class GPTLanguageModel(nn.Module):
     '''
     Bigram Language Model
     Contains:
@@ -385,7 +276,7 @@ class BigramLanguageModel(nn.Module):
         self.positional_embedding = nn.Embedding(block_size, n_embed)
         
         #Blocks of Multi-Head Self-Attention
-        self.blocks = nn.Sequential(*[Block(n_embed, n_head) for _ in range(n_layers)])
+        self.blocks = nn.Sequential(*[Block(n_head, n_embed, block_size, encoder=False) for _ in range(n_layers)])
 
         #Layer Normalization
         self.ln = nn.LayerNorm(n_embed)
@@ -424,3 +315,89 @@ class BigramLanguageModel(nn.Module):
             idx = torch.cat([idx, idx_next], dim=1)
 
         return idx
+    
+
+print("\n-------------------\n\n")
+
+print(f'Using {device} device')
+print("\n-------------------\n")
+
+#Loading the data
+with open('input.txt', 'r', encoding='utf-8') as f:
+    text = f.read()
+
+chars = set(text)
+vocab_size = len(chars)
+
+#Mapping from character to index and vice-versa
+stoi = {ch : i for i, ch in enumerate(chars)}
+itos = {i : ch for i, ch in enumerate(chars)}
+
+encode = lambda x : [stoi[ch] for ch in x]
+decode = lambda x : ''.join([itos[i] for i in x])
+
+#Train and Validation data
+data = torch.tensor(encode(text), dtype=torch.long)
+n = int(0.9 * len(data))
+
+train_data = data[:n]
+val_data = data[n:]
+
+#Get a batch of data
+def get_batch(split):
+    data = train_data if split == 'train' else val_data
+    start_idx = torch.randint(len(data) - block_size, (batch_size,))
+    
+    x = torch.stack([data[idx:idx+block_size] for idx in start_idx]).to(device)
+    y = torch.stack([data[idx+1:idx+block_size+1] for idx in start_idx]).to(device)
+    
+    return x, y
+
+#Loss Estimation
+@torch.no_grad()
+def estimate_loss(model):
+    out = {}
+    model.eval()
+
+    for split in ['train', 'val']:
+        losses = torch.zeros(eval_iterations)
+        for k in range(eval_iterations):
+            x, y = get_batch(split)
+            logits, loss = model(x, y)
+            losses[k] = loss.item()
+        out[split] = losses.mean().item()
+
+    model.train()
+
+    return out
+
+model = GPTLanguageModel(vocab_size, n_layer, n_embed, n_head, block_size)
+model.to(device)
+
+print(f'Number of parameters in the GPT Language Model are:{sum(p.numel() for p in model.parameters())/1e6}M parameters')
+print("\n-------------------\n\n")
+
+#Optimizer
+optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+
+for iter in range(max_iterations):
+
+    if iter % eval_interval == 0 or iter == max_iterations-1:
+        losses = estimate_loss(model)
+        print(f'Iteration: {iter}, Train Loss: {losses["train"]}, Validation Loss: {losses["val"]}')
+
+    xb, yb = get_batch('train')
+
+    logits, loss = model(xb, yb)
+
+    #Clear the gradients
+    optimizer.zero_grad(set_to_none=True)
+
+    #Backpropagation
+    loss.backward()
+
+    #Update the weights
+    optimizer.step()
+
+context = torch.zeros((1,1), dtype=torch.long, device=device)
+print(decode(model.generate(idx=context, max_new_tokens=500)[0].tolist()))
