@@ -76,8 +76,11 @@ class Head(nn.Module):
         self.dropout = nn.Dropout(dropout)
     
     def forward(self, x):
+        #B - Batch Size, T - Context Length, C - Embedding Dimension
         B, T, C = x.shape
         
+        #B, T, C -> B, T, H
+        #Compute Key, Query of each token in the sequence
         k = self.key(x)
         q = self.query(x)
 
@@ -95,9 +98,11 @@ class Head(nn.Module):
         #For visualization purposes
         self.attention_map = weight
 
+        #Compute the value of each token in the sequence
+        #B, T, C -> B, T, H
         v = self.value(x)
 
-        #(B, T, T) @ (B, T, C) = (B, T, C)
+        #(B, T, T) @ (B, T, H) = (B, T, H)
         out = weight @ v
         
         return out
@@ -251,13 +256,22 @@ class Decoder(nn.Module):
         #Iterate this process to generate a sequence of max new tokens
 
         for _ in range(max_new_tokens):
+            #Consider only the max sequence length
             idx_updated = idx[:,-block_size,:]
+
+            #Perform MSA and get logits
             logits = self(idx_updated)
 
             #Using only the last token in the sequence
             logits = logits[:,-1,:]
+
+            #Softmax to get the probabilities
             prob = F.softmax(logits, dim=-1)
+
+            #Sample the next token
             idx_next = torch.multinomial(prob, num_samples=1)
+
+            #Append the new token to the sequence
             idx = torch.cat([idx, idx_next], dim=1)
 
         return idx
@@ -281,7 +295,7 @@ class GPTLanguageModel(nn.Module):
         #Layer Normalization
         self.ln = nn.LayerNorm(n_embed)
 
-        #Linear Layer to transform embeddings to logits
+        #Linear Layer to transform embeddings to logits of vocabulary size
         self.linear = nn.Linear(n_embed, vocab_size)
 
     def forward(self, x, target=None):
@@ -307,11 +321,22 @@ class GPTLanguageModel(nn.Module):
     
     def generate(self, idx, max_new_tokens):
         for _ in range(max_new_tokens):
+            #Consider only the max sequence length
             idx_cond = idx[:,-block_size, :]
+
+            #Perform MSA and get logits
             logits, _ = self(idx)
+
+            #Using only the last token in the sequence
             logits = logits[:, -1, :]
+
+            #Softmax to get the probabilities
             prob = F.softmax(logits, dim=-1)
+
+            #Sample the next token
             idx_next = torch.multinomial(prob, num_samples=1)
+
+            #Append the new token to the sequence
             idx = torch.cat([idx, idx_next], dim=1)
 
         return idx
